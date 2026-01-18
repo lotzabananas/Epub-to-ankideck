@@ -238,9 +238,10 @@ class AnkiExporter:
                 self.add_card(card)
                 count += 1
             elif include_excluded:
-                # Add excluded tag before adding
-                card.tags.append("status::excluded")
-                self.add_card(card)
+                # Create a copy of the card with the excluded tag to avoid mutation
+                excluded_card = card.model_copy(deep=True)
+                excluded_card.tags = excluded_card.tags + ["status::excluded"]
+                self.add_card(excluded_card)
                 count += 1
         return count
 
