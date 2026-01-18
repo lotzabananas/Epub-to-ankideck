@@ -57,24 +57,28 @@ class EpubToAnkiAgent:
         self.density = Density.MEDIUM
         self.checkpoint_manager: Optional[CheckpointManager] = None
         self.checkpoint: Optional[SessionCheckpoint] = None
+        self.image_data: dict[str, bytes] = {}  # Stores extracted image binary data
 
     def _get_safe_title(self, title: str) -> str:
         """Convert title to filesystem-safe string."""
         return "".join(c if c.isalnum() or c in " -_" else "_" for c in title)
 
-    def load_book(self, epub_path: str, check_resume: bool = True) -> dict:
+    def load_book(
+        self, epub_path: str, check_resume: bool = True, extract_images: bool = False
+    ) -> dict:
         """
         Load an EPUB file and return book information.
 
         Args:
             epub_path: Path to the EPUB file
             check_resume: Check for existing checkpoint to resume
+            extract_images: Extract images from EPUB (default: False)
 
         Returns:
             Dict with book metadata, chapter list, and resume info if available
         """
         self.epub_path = epub_path
-        self.book = parse_epub(epub_path)
+        self.book, self.image_data = parse_epub(epub_path, extract_images=extract_images)
         self.chapter_cards = {}
 
         # Set default output directory
@@ -89,11 +93,13 @@ class EpubToAnkiAgent:
             "author": self.book.author,
             "total_chapters": len(self.book.chapters),
             "total_words": self.book.total_words,
+            "total_images": len(self.book.images),
             "chapters": [
                 {
                     "index": ch.index,
                     "title": ch.title,
                     "word_count": ch.word_count,
+                    "image_count": len(ch.image_ids),
                 }
                 for ch in self.book.chapters
             ],
@@ -807,6 +813,10 @@ AGENT_TOOLS = [
                 "check_resume": {
                     "type": "boolean",
                     "description": "Check for existing checkpoint (default: true)",
+                },
+                "extract_images": {
+                    "type": "boolean",
+                    "description": "Extract images from EPUB (default: false)",
                 },
             },
             "required": ["epub_path"],

@@ -130,14 +130,22 @@ def cli():
 
 @cli.command()
 @click.argument("epub_path", type=click.Path(exists=True))
-def info(epub_path: str):
+@click.option("--images", "-i", is_flag=True, help="Show image extraction info")
+def info(epub_path: str, images: bool):
     """Show information about an EPUB file."""
     console.print(f"\n[bold]Parsing:[/bold] {epub_path}\n")
 
     with console.status("Parsing EPUB..."):
-        book = parse_epub(epub_path)
+        book, image_data = parse_epub(epub_path, extract_images=images)
 
     display_book_info(book)
+
+    if images and book.images:
+        console.print(f"\n[bold]Images Found:[/bold] {len(book.images)}")
+        for img in book.images[:10]:  # Show first 10
+            size_kb = len(image_data.get(img.id, b"")) / 1024
+            dims = f"{img.width}x{img.height}" if img.width else "unknown"
+            console.print(f"  - {img.filename} ({dims}, {size_kb:.1f}KB)")
 
     # Show cost estimates for different densities
     console.print("\n[bold]Cost estimates by density:[/bold]")
@@ -190,6 +198,26 @@ def info(epub_path: str):
     default=True,
     help="Check for duplicate cards before export (default: yes)",
 )
+@click.option(
+    "--reverse", "-R",
+    is_flag=True,
+    help="Generate reverse cards for Q&A (Answer→Question)",
+)
+@click.option(
+    "--parent-deck", "-p",
+    type=str,
+    help="Parent deck name (creates hierarchical deck)",
+)
+@click.option(
+    "--subdecks", "-s",
+    is_flag=True,
+    help="Create separate subdecks per chapter",
+)
+@click.option(
+    "--images", "-i",
+    is_flag=True,
+    help="Extract and include images from EPUB",
+)
 def generate(
     epub_path: str,
     output: Optional[str],
@@ -200,6 +228,10 @@ def generate(
     resume: bool,
     dry_run: bool,
     dedupe: bool,
+    reverse: bool,
+    parent_deck: Optional[str],
+    subdecks: bool,
+    images: bool,
 ):
     """Generate Anki deck from an EPUB file."""
     density_enum = Density(density)
@@ -207,9 +239,12 @@ def generate(
     # Parse EPUB
     console.print(f"\n[bold]Parsing:[/bold] {epub_path}\n")
     with console.status("Parsing EPUB..."):
-        book = parse_epub(epub_path)
+        book, image_data = parse_epub(epub_path, extract_images=images)
 
     display_book_info(book)
+
+    if images and book.images:
+        console.print(f"[bold]Images extracted:[/bold] {len(book.images)}")
 
     # Set up output directory
     safe_title = "".join(c if c.isalnum() or c in " -_" else "_" for c in book.title)
@@ -419,9 +454,24 @@ def generate(
     console.print(f"\n[bold]Saving to:[/bold] {output_dir}")
     export_cards_to_json(all_chapter_cards, output_dir, book.title)
 
-    # Export to Anki
+    # Export to Anki with DeckConfig
+    from .models import DeckConfig
+
+    deck_config = DeckConfig(
+        parent_deck=parent_deck,
+        use_chapter_subdecks=subdecks,
+        include_reverse_cards=reverse,
+    )
+
     deck_name = f"{book.title} - {book.author}"
-    exporter = AnkiExporter(deck_name)
+    exporter = AnkiExporter(deck_name, config=deck_config)
+
+    # Add images if extracted
+    if images and image_data:
+        for img_id, data in image_data.items():
+            img_ref = book.get_image(img_id)
+            if img_ref:
+                exporter.add_image(img_id, img_ref.filename, data)
 
     for chapter_cards in all_chapter_cards:
         exporter.add_chapter_cards(chapter_cards, include_excluded=False)
@@ -432,6 +482,18 @@ def generate(
     console.print(f"\n[green]✓[/green] Anki deck exported: {apkg_path}")
     console.print(f"[green]✓[/green] JSON backup saved to: {output_dir}/included/ and {output_dir}/excluded/")
     console.print(f"[green]✓[/green] Final count: {included_cards} cards included")
+
+    # Show deck configuration details
+    if parent_deck or subdecks or reverse or images:
+        console.print("\n[bold]Deck Features:[/bold]")
+        if parent_deck:
+            console.print(f"  - Parent deck: {parent_deck}")
+        if subdecks:
+            console.print(f"  - Chapter subdecks: enabled")
+        if reverse:
+            console.print(f"  - Reverse cards: enabled")
+        if images and image_data:
+            console.print(f"  - Images included: {len(image_data)}")
 
     if dry_run:
         console.print("\n[yellow]Note: This was a dry run. No actual API calls were made.[/yellow]")
