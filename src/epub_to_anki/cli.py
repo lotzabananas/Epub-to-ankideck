@@ -16,9 +16,9 @@ from .checkpoint import CheckpointManager
 from .cost_estimator import CostEstimator
 from .deduplicator import CardDeduplicator
 from .exporter import AnkiExporter
-from .exporter.anki_exporter import export_cards_to_json
+from .exporter.anki_exporter import export_cards_to_json, MultiBookExporter
 from .generator import CardGenerator
-from .models import CardStatus, ChapterCards, Density
+from .models import CardStatus, ChapterCards, DeckConfig, Density
 from .parser import parse_epub
 from .parser.epub_parser import get_book_summary
 from .ranker import CardRanker
@@ -26,9 +26,9 @@ from .ranker import CardRanker
 console = Console()
 
 
-def display_book_info(book) -> None:
+def display_book_info(book, include_images: bool = False) -> None:
     """Display parsed book information."""
-    summary = get_book_summary(book)
+    summary = get_book_summary(book, include_images=include_images)
     console.print(Panel(summary, title="[bold]Book Loaded[/bold]", border_style="green"))
 
 
@@ -83,7 +83,7 @@ def display_cards_preview(cards: list, limit: int = 5) -> None:
 
     for i, card in enumerate(cards[:limit]):
         score = card.compute_score()
-        status_icon = "[green]✓[/green]" if card.status == CardStatus.INCLUDED else "[red]✗[/red]"
+        status_icon = "[green]O[/green]" if card.status == CardStatus.INCLUDED else "[red]X[/red]"
 
         console.print(f"{status_icon} [{card.format.value.upper()}] Score: {score:.1f}")
         console.print(f"   {card.get_display_text()}")
@@ -130,14 +130,15 @@ def cli():
 
 @cli.command()
 @click.argument("epub_path", type=click.Path(exists=True))
-def info(epub_path: str):
+@click.option("--images", "-i", is_flag=True, help="Include image information")
+def info(epub_path: str, images: bool):
     """Show information about an EPUB file."""
     console.print(f"\n[bold]Parsing:[/bold] {epub_path}\n")
 
     with console.status("Parsing EPUB..."):
-        book = parse_epub(epub_path)
+        book = parse_epub(epub_path, extract_images=images)
 
-    display_book_info(book)
+    display_book_info(book, include_images=images)
 
     # Show cost estimates for different densities
     console.print("\n[bold]Cost estimates by density:[/bold]")
@@ -166,6 +167,12 @@ def info(epub_path: str):
     help="Specific chapters to process (e.g., '1,2,3' or '1-5')",
 )
 @click.option(
+    "--chapter-density",
+    type=str,
+    multiple=True,
+    help="Per-chapter density override (e.g., '1:thorough' or '3-5:light')",
+)
+@click.option(
     "--auto", "-a",
     is_flag=True,
     help="Skip manual review, use automatic thresholds",
@@ -190,16 +197,41 @@ def info(epub_path: str):
     default=True,
     help="Check for duplicate cards before export (default: yes)",
 )
+@click.option(
+    "--reverse",
+    is_flag=True,
+    help="Generate reverse (Answer->Question) cards for Q&A",
+)
+@click.option(
+    "--images",
+    is_flag=True,
+    help="Extract and embed images from EPUB",
+)
+@click.option(
+    "--subdecks",
+    is_flag=True,
+    help="Create per-chapter subdecks",
+)
+@click.option(
+    "--parent-deck",
+    type=str,
+    help="Nest deck under a parent deck name",
+)
 def generate(
     epub_path: str,
     output: Optional[str],
     density: str,
     chapters: Optional[str],
+    chapter_density: tuple,
     auto: bool,
     threshold: Optional[float],
     resume: bool,
     dry_run: bool,
     dedupe: bool,
+    reverse: bool,
+    images: bool,
+    subdecks: bool,
+    parent_deck: Optional[str],
 ):
     """Generate Anki deck from an EPUB file."""
     density_enum = Density(density)
@@ -207,9 +239,17 @@ def generate(
     # Parse EPUB
     console.print(f"\n[bold]Parsing:[/bold] {epub_path}\n")
     with console.status("Parsing EPUB..."):
-        book = parse_epub(epub_path)
+        book = parse_epub(epub_path, extract_images=images)
 
-    display_book_info(book)
+    display_book_info(book, include_images=images)
+
+    # Set up deck config
+    deck_config = DeckConfig(
+        create_subdecks=subdecks,
+        parent_deck=parent_deck,
+        include_reverse=reverse,
+        extract_images=images,
+    )
 
     # Set up output directory
     safe_title = "".join(c if c.isalnum() or c in " -_" else "_" for c in book.title)
@@ -218,6 +258,28 @@ def generate(
     else:
         output_dir = Path("output") / safe_title
     output_dir.mkdir(parents=True, exist_ok=True)
+
+    # Parse per-chapter density settings
+    chapter_densities: dict[int, Density] = {}
+    for cd in chapter_density:
+        try:
+            parts = cd.split(":")
+            if len(parts) != 2:
+                console.print(f"[yellow]Invalid chapter-density format: {cd}[/yellow]")
+                continue
+
+            chapter_spec, density_value = parts
+            density_value = Density(density_value.lower())
+
+            # Parse chapter spec (single number or range)
+            if "-" in chapter_spec:
+                start, end = map(int, chapter_spec.split("-"))
+                for i in range(start - 1, end):  # Convert to 0-indexed
+                    chapter_densities[i] = density_value
+            else:
+                chapter_densities[int(chapter_spec) - 1] = density_value
+        except (ValueError, KeyError) as e:
+            console.print(f"[yellow]Error parsing chapter-density '{cd}': {e}[/yellow]")
 
     # Check for checkpoint
     checkpoint_manager = CheckpointManager(output_dir)
@@ -311,6 +373,9 @@ def generate(
             for chapter in chapters_to_process:
                 progress.update(task, description=f"Processing: {chapter.title[:40]}...")
 
+                # Determine density for this chapter
+                chapter_density_enum = chapter_densities.get(chapter.index, density_enum)
+
                 # Generate cards
                 if dry_run:
                     # Create mock cards for dry run
@@ -337,10 +402,10 @@ def generate(
                     chapter_cards = ChapterCards(
                         chapter=chapter,
                         cards=mock_cards,
-                        density_used=density_enum,
+                        density_used=chapter_density_enum,
                     )
                 else:
-                    chapter_cards = generator.generate_for_chapter(book, chapter, density_enum)
+                    chapter_cards = generator.generate_for_chapter(book, chapter, chapter_density_enum)
 
                 # Rank cards
                 ranker.rank_chapter(chapter_cards)
@@ -351,7 +416,7 @@ def generate(
                     if threshold:
                         ranker.apply_custom_threshold(chapter_cards, threshold)
                     else:
-                        ranker.apply_density_threshold(chapter_cards, density_enum)
+                        ranker.apply_density_threshold(chapter_cards, chapter_density_enum)
                 else:
                     # Interactive mode: ask user
                     progress.stop()
@@ -359,7 +424,7 @@ def generate(
                     user_threshold = interactive_threshold_selection(chapter_cards, ranker)
 
                     if user_threshold == -1:
-                        ranker.apply_density_threshold(chapter_cards, density_enum)
+                        ranker.apply_density_threshold(chapter_cards, chapter_density_enum)
                     else:
                         ranker.apply_custom_threshold(chapter_cards, user_threshold)
 
@@ -421,27 +486,140 @@ def generate(
 
     # Export to Anki
     deck_name = f"{book.title} - {book.author}"
-    exporter = AnkiExporter(deck_name)
+    exporter = AnkiExporter(deck_name, config=deck_config)
 
     for chapter_cards in all_chapter_cards:
-        exporter.add_chapter_cards(chapter_cards, include_excluded=False)
+        exporter.add_chapter_cards(chapter_cards, include_excluded=False, generate_reverse=reverse)
+
+    # Add images if extracted
+    if images and book.images:
+        temp_media_dir = output_dir / ".media"
+        exporter.add_images(book.images, temp_media_dir)
 
     apkg_path = output_dir / f"{safe_title}.apkg"
     exporter.export(apkg_path)
 
-    console.print(f"\n[green]✓[/green] Anki deck exported: {apkg_path}")
-    console.print(f"[green]✓[/green] JSON backup saved to: {output_dir}/included/ and {output_dir}/excluded/")
-    console.print(f"[green]✓[/green] Final count: {included_cards} cards included")
+    console.print(f"\n[green]O[/green] Anki deck exported: {apkg_path}")
+    console.print(f"[green]O[/green] JSON backup saved to: {output_dir}/included/ and {output_dir}/excluded/")
+    console.print(f"[green]O[/green] Final count: {included_cards} cards included")
+
+    if reverse:
+        console.print(f"[green]O[/green] Reverse cards: enabled")
+
+    if subdecks:
+        console.print(f"[green]O[/green] Chapter subdecks: created")
+
+    if parent_deck:
+        console.print(f"[green]O[/green] Parent deck: {parent_deck}")
 
     if dry_run:
         console.print("\n[yellow]Note: This was a dry run. No actual API calls were made.[/yellow]")
 
 
 @cli.command()
+@click.argument("epub_paths", nargs=-1, type=click.Path(exists=True), required=True)
+@click.option("--output", "-o", type=click.Path(), required=True, help="Output .apkg path")
+@click.option("--name", "-n", type=str, required=True, help="Parent deck name for all books")
+@click.option("--subdecks", is_flag=True, help="Create per-chapter subdecks within each book")
+@click.option("--reverse", is_flag=True, help="Generate reverse cards")
+@click.option("--images", is_flag=True, help="Extract and embed images")
+def combine(
+    epub_paths: tuple,
+    output: str,
+    name: str,
+    subdecks: bool,
+    reverse: bool,
+    images: bool,
+):
+    """Combine multiple EPUB files into a single Anki deck."""
+    if not epub_paths:
+        console.print("[red]Error: At least one EPUB file is required[/red]")
+        return
+
+    console.print(f"\n[bold]Combining {len(epub_paths)} books into deck:[/bold] {name}\n")
+
+    # Set up deck config
+    deck_config = DeckConfig(
+        create_subdecks=subdecks,
+        include_reverse=reverse,
+        extract_images=images,
+    )
+
+    # Create multi-book exporter
+    multi_exporter = MultiBookExporter(name, config=deck_config)
+
+    # This is a placeholder - in real usage, users would need to generate cards first
+    # or we would need to load from existing JSON exports
+    console.print("[yellow]Note: This command combines existing generated decks.[/yellow]")
+    console.print("[yellow]Use the 'generate' command first to create cards for each book.[/yellow]")
+
+    # Look for existing output directories
+    for epub_path in epub_paths:
+        book = parse_epub(epub_path, extract_images=images)
+        safe_title = "".join(c if c.isalnum() or c in " -_" else "_" for c in book.title)
+        expected_dir = Path("output") / safe_title / "included"
+
+        if expected_dir.exists():
+            console.print(f"  Found cards for: {book.title}")
+
+            # Load cards from JSON
+            from .models import Card, Chapter
+            chapter_cards_list = []
+
+            for json_file in sorted(expected_dir.glob("*.json")):
+                cards_data = json.loads(json_file.read_text())
+                cards = [Card(**c) for c in cards_data]
+
+                if cards:
+                    # Create a minimal chapter for the ChapterCards
+                    chapter_idx = int(json_file.stem.split("_")[1]) - 1
+                    chapter = Chapter(
+                        index=chapter_idx,
+                        title=f"Chapter {chapter_idx + 1}",
+                        content="",
+                        word_count=0,
+                    )
+                    chapter_cards_list.append(ChapterCards(
+                        chapter=chapter,
+                        cards=cards,
+                        density_used=Density.MEDIUM,
+                    ))
+
+            if chapter_cards_list:
+                count = multi_exporter.add_book(
+                    book, chapter_cards_list,
+                    generate_reverse=reverse,
+                )
+                console.print(f"    Added {count} cards")
+        else:
+            console.print(f"  [yellow]No generated cards found for: {book.title}[/yellow]")
+            console.print(f"    Expected: {expected_dir}")
+
+    # Export combined deck
+    output_path = Path(output)
+    multi_exporter.export(output_path)
+
+    summary = multi_exporter.get_summary()
+    console.print(f"\n[green]O[/green] Combined deck exported: {output_path}")
+    console.print(f"[green]O[/green] Books included: {summary['books']}")
+    console.print(f"[green]O[/green] Parent deck: {summary['parent_deck']}")
+
+
+@cli.command()
 @click.argument("json_dir", type=click.Path(exists=True))
 @click.option("--output", "-o", type=click.Path(), help="Output .apkg path")
 @click.option("--name", "-n", type=str, help="Deck name")
-def export(json_dir: str, output: Optional[str], name: Optional[str]):
+@click.option("--reverse", is_flag=True, help="Generate reverse cards")
+@click.option("--subdecks", is_flag=True, help="Create per-chapter subdecks")
+@click.option("--parent-deck", type=str, help="Nest under a parent deck")
+def export(
+    json_dir: str,
+    output: Optional[str],
+    name: Optional[str],
+    reverse: bool,
+    subdecks: bool,
+    parent_deck: Optional[str],
+):
     """Export previously generated cards to Anki format."""
     json_dir_path = Path(json_dir)
 
@@ -453,13 +631,20 @@ def export(json_dir: str, output: Optional[str], name: Optional[str]):
     else:
         deck_name = name or "Imported Deck"
 
+    # Set up deck config
+    deck_config = DeckConfig(
+        create_subdecks=subdecks,
+        parent_deck=parent_deck,
+        include_reverse=reverse,
+    )
+
     # Collect all included cards
     included_dir = json_dir_path / "included"
     if not included_dir.exists():
         console.print("[red]No included cards found![/red]")
         return
 
-    exporter = AnkiExporter(deck_name)
+    exporter = AnkiExporter(deck_name, config=deck_config)
     card_count = 0
 
     for json_file in sorted(included_dir.glob("*.json")):
@@ -471,13 +656,20 @@ def export(json_dir: str, output: Optional[str], name: Optional[str]):
             exporter.add_card(card)
             card_count += 1
 
+            # Generate reverse if requested
+            if reverse and card.format.value == "qa":
+                reverse_card = card.create_reverse()
+                if reverse_card:
+                    exporter.add_card(reverse_card)
+                    card_count += 1
+
     if output:
         output_path = Path(output)
     else:
         output_path = json_dir_path / f"{deck_name}.apkg"
 
     exporter.export(output_path)
-    console.print(f"[green]✓[/green] Exported {card_count} cards to: {output_path}")
+    console.print(f"[green]O[/green] Exported {card_count} cards to: {output_path}")
 
 
 @cli.command()
@@ -486,7 +678,7 @@ def clear_checkpoint(output_dir: str):
     """Clear checkpoint to start fresh."""
     checkpoint_manager = CheckpointManager(Path(output_dir))
     if checkpoint_manager.delete():
-        console.print("[green]✓[/green] Checkpoint deleted")
+        console.print("[green]O[/green] Checkpoint deleted")
     else:
         console.print("[yellow]No checkpoint found[/yellow]")
 

@@ -1,13 +1,15 @@
-"""Parse EPUB files into structured chapter data."""
+"""Parse EPUB files into structured chapter data with optional image extraction."""
 
 import re
+import uuid
 from pathlib import Path
+from typing import Optional
 
 import ebooklib
 from bs4 import BeautifulSoup
 from ebooklib import epub
 
-from ..models import Book, Chapter
+from ..models import Book, Chapter, EpubImage
 
 
 def clean_html_to_text(html_content: str) -> str:
@@ -93,12 +95,101 @@ def is_content_chapter(text: str, title: str) -> bool:
     return True
 
 
-def parse_epub(file_path: str | Path) -> Book:
+def extract_images_from_epub(
+    epub_book: epub.EpubBook,
+    extract_images: bool = False,
+) -> list[EpubImage]:
+    """
+    Extract all images from an EPUB book.
+
+    Args:
+        epub_book: The parsed EPUB book
+        extract_images: Whether to actually extract image data
+
+    Returns:
+        List of EpubImage objects
+    """
+    if not extract_images:
+        return []
+
+    images: list[EpubImage] = []
+
+    for item in epub_book.get_items():
+        if item.get_type() == ebooklib.ITEM_IMAGE:
+            try:
+                filename = Path(item.file_name).name
+                media_type = item.media_type
+
+                images.append(
+                    EpubImage(
+                        id=str(uuid.uuid4())[:8],
+                        filename=filename,
+                        media_type=media_type,
+                        data=item.get_content(),
+                    )
+                )
+            except Exception:
+                # Skip problematic images
+                continue
+
+    return images
+
+
+def extract_chapter_images(
+    html_content: str,
+    all_images: list[EpubImage],
+    chapter_index: int,
+) -> list[EpubImage]:
+    """
+    Find images referenced in a chapter's HTML.
+
+    Args:
+        html_content: The chapter's HTML content
+        all_images: List of all extracted images
+        chapter_index: Index of the chapter
+
+    Returns:
+        List of images referenced in this chapter
+    """
+    soup = BeautifulSoup(html_content, "html.parser")
+    chapter_images: list[EpubImage] = []
+
+    # Find all img tags
+    for img_tag in soup.find_all("img"):
+        src = img_tag.get("src", "")
+        if not src:
+            continue
+
+        # Get filename from src
+        img_filename = Path(src).name
+
+        # Find matching image in our list
+        for img in all_images:
+            if img.filename == img_filename:
+                # Create a copy with chapter reference
+                chapter_img = EpubImage(
+                    id=img.id,
+                    filename=img.filename,
+                    media_type=img.media_type,
+                    data=img.data,
+                    source_chapter_index=chapter_index,
+                )
+                chapter_images.append(chapter_img)
+                break
+
+    return chapter_images
+
+
+def parse_epub(
+    file_path: str | Path,
+    extract_images: bool = False,
+) -> Book:
     """
     Parse an EPUB file into a Book object with chapters.
 
     Args:
         file_path: Path to the EPUB file
+        extract_images: Whether to extract and include images
 
     Returns:
         Book object with parsed chapters
@@ -135,6 +226,9 @@ def parse_epub(file_path: str | Path) -> Book:
     if id_meta:
         identifier = id_meta[0][0]
 
+    # Extract all images if requested
+    all_images = extract_images_from_epub(book, extract_images)
+
     # Extract chapters
     chapters: list[Chapter] = []
     chapter_index = 0
@@ -155,12 +249,18 @@ def parse_epub(file_path: str | Path) -> Book:
             if not is_content_chapter(text, chapter_title):
                 continue
 
+            # Extract images for this chapter
+            chapter_images = extract_chapter_images(
+                html_content, all_images, chapter_index
+            ) if extract_images else []
+
             chapter = Chapter(
                 index=chapter_index,
                 title=chapter_title,
                 content=text,
                 word_count=count_words(text),
                 html_content=html_content,
+                images=chapter_images,
             )
             chapters.append(chapter)
             chapter_index += 1
@@ -177,21 +277,28 @@ def parse_epub(file_path: str | Path) -> Book:
         chapters=chapters,
         language=language,
         identifier=identifier,
+        images=all_images,
     )
 
 
-def get_book_summary(book: Book) -> str:
+def get_book_summary(book: Book, include_images: bool = False) -> str:
     """Get a human-readable summary of a parsed book."""
     lines = [
         f"Title: {book.title}",
         f"Author: {book.author}",
         f"Chapters: {len(book.chapters)}",
         f"Total words: {book.total_words:,}",
-        "",
-        "Chapters:",
     ]
 
+    if include_images and book.images:
+        lines.append(f"Images: {len(book.images)}")
+
+    lines.extend(["", "Chapters:"])
+
     for ch in book.chapters:
-        lines.append(f"  {ch.index + 1}. {ch.title} ({ch.word_count:,} words)")
+        line = f"  {ch.index + 1}. {ch.title} ({ch.word_count:,} words)"
+        if include_images and ch.images:
+            line += f" [{len(ch.images)} images]"
+        lines.append(line)
 
     return "\n".join(lines)
