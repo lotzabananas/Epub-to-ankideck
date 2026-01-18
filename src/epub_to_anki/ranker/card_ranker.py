@@ -166,7 +166,7 @@ class CardRanker:
         Returns dict with min, max, mean, median, and counts by score bucket.
         """
         if not chapter_cards.cards:
-            return {"min": 0, "max": 0, "mean": 0, "median": 0, "buckets": {}}
+            return {"min": 0, "max": 0, "mean": 0, "median": 0, "buckets": {}, "total": 0}
 
         scores = [compute_card_score(c) for c in chapter_cards.cards]
         scores.sort()
@@ -179,11 +179,18 @@ class CardRanker:
             "8-10 (critical)": len([s for s in scores if s >= 8]),
         }
 
+        # Calculate median correctly for both odd and even length lists
+        n = len(scores)
+        if n % 2 == 1:
+            median = scores[n // 2]
+        else:
+            median = (scores[n // 2 - 1] + scores[n // 2]) / 2
+
         return {
             "min": round(min(scores), 1),
             "max": round(max(scores), 1),
             "mean": round(sum(scores) / len(scores), 1),
-            "median": round(scores[len(scores) // 2], 1),
+            "median": round(median, 1),
             "total": len(scores),
             "buckets": buckets,
         }

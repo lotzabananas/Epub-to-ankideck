@@ -3,7 +3,7 @@
 import json
 import re
 import uuid
-from typing import Optional
+from typing import Callable, Optional
 
 import anthropic
 
@@ -190,7 +190,14 @@ class CardGenerator:
                 messages=[{"role": "user", "content": prompt}],
             )
 
-            response_text = response.content[0].text
+            # Safely extract response text
+            if not response.content or len(response.content) == 0:
+                continue
+            content_block = response.content[0]
+            if not hasattr(content_block, "text"):
+                continue
+            response_text = content_block.text
+
             cards = parse_cards_from_response(response_text, chapter)
             all_cards.extend(cards)
 
@@ -205,7 +212,7 @@ class CardGenerator:
         book: Book,
         density: Density = Density.MEDIUM,
         chapter_indices: Optional[list[int]] = None,
-        progress_callback: Optional[callable] = None,
+        progress_callback: Optional[Callable[[int, int, str], None]] = None,
     ) -> list[ChapterCards]:
         """
         Generate flashcards for multiple chapters.

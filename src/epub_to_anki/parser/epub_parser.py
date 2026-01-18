@@ -165,6 +165,12 @@ def parse_epub(file_path: str | Path) -> Book:
             chapters.append(chapter)
             chapter_index += 1
 
+    if not chapters:
+        raise ValueError(
+            f"No content chapters found in '{file_path.name}'. "
+            "The EPUB may be empty, corrupted, or contain only front/back matter."
+        )
+
     return Book(
         title=title,
         author=author,

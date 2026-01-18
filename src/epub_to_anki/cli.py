@@ -9,9 +9,12 @@ import click
 from rich.console import Console
 from rich.panel import Panel
 from rich.progress import Progress, SpinnerColumn, TextColumn
-from rich.prompt import Confirm, IntPrompt, Prompt
+from rich.prompt import Confirm, Prompt
 from rich.table import Table
 
+from .checkpoint import CheckpointManager
+from .cost_estimator import CostEstimator
+from .deduplicator import CardDeduplicator
 from .exporter import AnkiExporter
 from .exporter.anki_exporter import export_cards_to_json
 from .generator import CardGenerator
@@ -53,6 +56,25 @@ def display_chapter_cards_summary(chapter_cards: ChapterCards) -> None:
         bucket_table.add_row(bucket, str(count))
 
     console.print(bucket_table)
+
+
+def display_cost_estimate(book, density: Density, chapter_indices: Optional[list[int]] = None) -> None:
+    """Display cost estimate before generation."""
+    estimator = CostEstimator()
+    estimate = estimator.estimate_book(book, density, chapter_indices)
+
+    table = Table(title="Cost Estimate", border_style="blue")
+    table.add_column("Item", style="cyan")
+    table.add_column("Value", style="green")
+
+    table.add_row("Chapters to process", str(estimate.chapters_count))
+    table.add_row("Total words", f"{estimate.total_words:,}")
+    table.add_row("Density", estimate.density)
+    table.add_row("Input tokens (est.)", f"~{estimate.total_input_tokens:,}")
+    table.add_row("Output tokens (est.)", f"~{estimate.total_output_tokens:,}")
+    table.add_row("[bold]Estimated cost[/bold]", f"[bold]${estimate.estimated_cost_usd:.4f} USD[/bold]")
+
+    console.print(table)
 
 
 def display_cards_preview(cards: list, limit: int = 5) -> None:
@@ -117,6 +139,13 @@ def info(epub_path: str):
 
     display_book_info(book)
 
+    # Show cost estimates for different densities
+    console.print("\n[bold]Cost estimates by density:[/bold]")
+    estimator = CostEstimator()
+    for density in [Density.LIGHT, Density.MEDIUM, Density.THOROUGH]:
+        estimate = estimator.estimate_book(book, density)
+        console.print(f"  {density.value:10s}: ~${estimate.estimated_cost_usd:.4f} USD")
+
 
 @cli.command()
 @click.argument("epub_path", type=click.Path(exists=True))
@@ -146,6 +175,21 @@ def info(epub_path: str):
     type=float,
     help="Custom importance threshold (1-10)",
 )
+@click.option(
+    "--resume", "-r",
+    is_flag=True,
+    help="Resume from checkpoint if available",
+)
+@click.option(
+    "--dry-run",
+    is_flag=True,
+    help="Test workflow without making API calls",
+)
+@click.option(
+    "--dedupe/--no-dedupe",
+    default=True,
+    help="Check for duplicate cards before export (default: yes)",
+)
 def generate(
     epub_path: str,
     output: Optional[str],
@@ -153,6 +197,9 @@ def generate(
     chapters: Optional[str],
     auto: bool,
     threshold: Optional[float],
+    resume: bool,
+    dry_run: bool,
+    dedupe: bool,
 ):
     """Generate Anki deck from an EPUB file."""
     density_enum = Density(density)
@@ -164,77 +211,176 @@ def generate(
 
     display_book_info(book)
 
+    # Set up output directory
+    safe_title = "".join(c if c.isalnum() or c in " -_" else "_" for c in book.title)
+    if output:
+        output_dir = Path(output)
+    else:
+        output_dir = Path("output") / safe_title
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    # Check for checkpoint
+    checkpoint_manager = CheckpointManager(output_dir)
+    all_chapter_cards: list[ChapterCards] = []
+    processed_indices: set[int] = set()
+
+    if resume and checkpoint_manager.exists():
+        checkpoint = checkpoint_manager.load()
+        if checkpoint and checkpoint.book_title == book.title:
+            console.print(f"\n[bold green]Resuming from checkpoint[/bold green]")
+            summary = checkpoint_manager.get_resume_summary(checkpoint)
+            console.print(f"  Chapters processed: {summary['chapters_processed']}/{summary['chapters_total']}")
+            console.print(f"  Cards generated: {summary['total_cards_generated']}")
+
+            # Restore chapter cards
+            for chapter in book.chapters:
+                chapter_cards = checkpoint_manager.restore_chapter_cards(checkpoint, chapter)
+                if chapter_cards:
+                    all_chapter_cards.append(chapter_cards)
+                    processed_indices.add(chapter.index)
+
+            density_enum = checkpoint.density
+            console.print(f"  Density: {density_enum.value}")
+        else:
+            console.print("[yellow]Checkpoint found but for different book, starting fresh[/yellow]")
+
     # Parse chapter selection
     chapter_indices = None
     if chapters:
-        chapter_indices = parse_chapter_selection(chapters, len(book.chapters))
-        console.print(f"\n[bold]Processing chapters:[/bold] {chapter_indices}")
-
-    # Confirm before proceeding
-    if not auto:
-        if not Confirm.ask("\nProceed with card generation?"):
-            console.print("[yellow]Aborted.[/yellow]")
+        try:
+            chapter_indices = parse_chapter_selection(chapters, len(book.chapters))
+            console.print(f"\n[bold]Processing chapters:[/bold] {[i + 1 for i in chapter_indices]}")
+        except ChapterSelectionError as e:
+            console.print(f"[red]Error:[/red] {e}")
             return
 
-    # Initialize components
-    generator = CardGenerator()
-    ranker = CardRanker()
-
-    # Generate cards for each chapter
-    all_chapter_cards: list[ChapterCards] = []
-
+    # Determine which chapters to process
     chapters_to_process = book.chapters
     if chapter_indices:
         chapters_to_process = [ch for ch in book.chapters if ch.index in chapter_indices]
 
-    with Progress(
-        SpinnerColumn(),
-        TextColumn("[progress.description]{task.description}"),
-        console=console,
-    ) as progress:
-        task = progress.add_task("Generating cards...", total=len(chapters_to_process))
+    # Remove already processed chapters
+    chapters_to_process = [ch for ch in chapters_to_process if ch.index not in processed_indices]
 
-        for chapter in chapters_to_process:
-            progress.update(task, description=f"Processing: {chapter.title[:40]}...")
+    if not chapters_to_process and not all_chapter_cards:
+        console.print("[yellow]No chapters to process.[/yellow]")
+        return
 
-            # Generate cards
-            chapter_cards = generator.generate_for_chapter(book, chapter, density_enum)
+    if chapters_to_process:
+        # Show cost estimate
+        chapter_indices_to_process = [ch.index for ch in chapters_to_process]
+        console.print()
+        display_cost_estimate(book, density_enum, chapter_indices_to_process)
 
-            # Rank cards
-            ranker.rank_chapter(chapter_cards)
+        if dry_run:
+            console.print("\n[bold yellow]DRY RUN MODE[/bold yellow] - No API calls will be made")
 
-            # Apply threshold
-            if auto or threshold:
-                # Auto mode: use provided threshold or density-based default
-                if threshold:
-                    ranker.apply_custom_threshold(chapter_cards, threshold)
+        # Confirm before proceeding
+        if not auto:
+            if not Confirm.ask("\nProceed with card generation?"):
+                console.print("[yellow]Aborted.[/yellow]")
+                return
+
+        # Initialize components
+        if dry_run:
+            generator = None
+        else:
+            generator = CardGenerator()
+        ranker = CardRanker()
+
+        # Create checkpoint if not resuming
+        if not checkpoint_manager.exists():
+            checkpoint = checkpoint_manager.create_checkpoint(
+                epub_path=epub_path,
+                book_title=book.title,
+                book_author=book.author,
+                total_chapters=len(book.chapters),
+                density=density_enum,
+            )
+            checkpoint_manager.save(checkpoint)
+        else:
+            checkpoint = checkpoint_manager.load()
+
+        with Progress(
+            SpinnerColumn(),
+            TextColumn("[progress.description]{task.description}"),
+            console=console,
+        ) as progress:
+            task = progress.add_task("Generating cards...", total=len(chapters_to_process))
+
+            for chapter in chapters_to_process:
+                progress.update(task, description=f"Processing: {chapter.title[:40]}...")
+
+                # Generate cards
+                if dry_run:
+                    # Create mock cards for dry run
+                    from .models import Card, CardFormat, CardType
+                    import uuid
+
+                    num_cards = max(1, chapter.word_count // 500)
+                    mock_cards = []
+                    for i in range(num_cards):
+                        card = Card(
+                            id=str(uuid.uuid4())[:8],
+                            format=CardFormat.QA,
+                            card_type=CardType.CONCEPT,
+                            question=f"[DRY RUN] Sample question {i+1} from {chapter.title}?",
+                            answer=f"[DRY RUN] Sample answer {i+1}",
+                            importance=5 + (i % 5),
+                            difficulty=3 + (i % 5),
+                            source_chapter=chapter.title,
+                            source_chapter_index=chapter.index,
+                            status=CardStatus.INCLUDED,
+                            tags=[f"chapter::{chapter.index + 1}", "dry_run"],
+                        )
+                        mock_cards.append(card)
+                    chapter_cards = ChapterCards(
+                        chapter=chapter,
+                        cards=mock_cards,
+                        density_used=density_enum,
+                    )
                 else:
-                    ranker.apply_density_threshold(chapter_cards)
-            else:
-                # Interactive mode: ask user
-                progress.stop()
-                console.print(f"\n[bold]Chapter {chapter.index + 1}: {chapter.title}[/bold]")
-                user_threshold = interactive_threshold_selection(chapter_cards, ranker)
+                    chapter_cards = generator.generate_for_chapter(book, chapter, density_enum)
 
-                if user_threshold == -1:
-                    ranker.apply_density_threshold(chapter_cards)
+                # Rank cards
+                ranker.rank_chapter(chapter_cards)
+
+                # Apply threshold
+                if auto or threshold:
+                    # Auto mode: use provided threshold or density-based default
+                    if threshold:
+                        ranker.apply_custom_threshold(chapter_cards, threshold)
+                    else:
+                        ranker.apply_density_threshold(chapter_cards, density_enum)
                 else:
-                    ranker.apply_custom_threshold(chapter_cards, user_threshold)
+                    # Interactive mode: ask user
+                    progress.stop()
+                    console.print(f"\n[bold]Chapter {chapter.index + 1}: {chapter.title}[/bold]")
+                    user_threshold = interactive_threshold_selection(chapter_cards, ranker)
 
-                # Show preview
-                display_cards_preview(chapter_cards.cards)
+                    if user_threshold == -1:
+                        ranker.apply_density_threshold(chapter_cards, density_enum)
+                    else:
+                        ranker.apply_custom_threshold(chapter_cards, user_threshold)
 
-                # Ask if user wants to continue with remaining chapters on auto
-                if len(chapters_to_process) > 1:
-                    if Confirm.ask("Apply same threshold to remaining chapters?"):
-                        auto = True
-                        if user_threshold != -1:
-                            threshold = user_threshold
+                    # Show preview
+                    display_cards_preview(chapter_cards.cards)
 
-                progress.start()
+                    # Ask if user wants to continue with remaining chapters on auto
+                    if len(chapters_to_process) > 1:
+                        if Confirm.ask("Apply same threshold to remaining chapters?"):
+                            auto = True
+                            if user_threshold != -1:
+                                threshold = user_threshold
 
-            all_chapter_cards.append(chapter_cards)
-            progress.advance(task)
+                    progress.start()
+
+                all_chapter_cards.append(chapter_cards)
+
+                # Save checkpoint after each chapter
+                checkpoint_manager.add_chapter(checkpoint, chapter_cards)
+
+                progress.advance(task)
 
     # Summary
     total_cards = sum(len(cc.cards) for cc in all_chapter_cards)
@@ -246,14 +392,28 @@ def generate(
     console.print(f"  [green]Included: {included_cards}[/green]")
     console.print(f"  [red]Excluded: {excluded_cards}[/red]")
 
-    # Set up output directory
-    if output:
-        output_dir = Path(output)
-    else:
-        safe_title = "".join(c if c.isalnum() or c in " -_" else "_" for c in book.title)
-        output_dir = Path("output") / safe_title
+    # Check for duplicates
+    if dedupe and len(all_chapter_cards) > 1:
+        console.print("\n[bold]Checking for duplicates...[/bold]")
+        deduplicator = CardDeduplicator()
+        all_cards = []
+        for cc in all_chapter_cards:
+            all_cards.extend(cc.cards)
 
-    output_dir.mkdir(parents=True, exist_ok=True)
+        result = deduplicator.find_duplicates(all_cards, cross_chapter=True)
+        if result.duplicates_found > 0:
+            console.print(f"  Found {result.duplicates_found} duplicate cards")
+            console.print(f"    Exact matches: {result.exact_duplicates}")
+            console.print(f"    Similar cards: {result.similar_duplicates}")
+
+            if auto or Confirm.ask("Remove duplicates (keep highest scoring)?"):
+                removed = deduplicator.mark_duplicates_excluded(result, "highest_score")
+                console.print(f"  [green]Marked {removed} duplicates as excluded[/green]")
+                # Update counts
+                included_cards = sum(len(cc.included_cards) for cc in all_chapter_cards)
+                excluded_cards = sum(len(cc.excluded_cards) for cc in all_chapter_cards)
+        else:
+            console.print("  [green]No duplicates found[/green]")
 
     # Export to JSON
     console.print(f"\n[bold]Saving to:[/bold] {output_dir}")
@@ -271,6 +431,10 @@ def generate(
 
     console.print(f"\n[green]✓[/green] Anki deck exported: {apkg_path}")
     console.print(f"[green]✓[/green] JSON backup saved to: {output_dir}/included/ and {output_dir}/excluded/")
+    console.print(f"[green]✓[/green] Final count: {included_cards} cards included")
+
+    if dry_run:
+        console.print("\n[yellow]Note: This was a dry run. No actual API calls were made.[/yellow]")
 
 
 @cli.command()
@@ -279,10 +443,10 @@ def generate(
 @click.option("--name", "-n", type=str, help="Deck name")
 def export(json_dir: str, output: Optional[str], name: Optional[str]):
     """Export previously generated cards to Anki format."""
-    json_dir = Path(json_dir)
+    json_dir_path = Path(json_dir)
 
     # Read metadata
-    meta_path = json_dir / "metadata.json"
+    meta_path = json_dir_path / "metadata.json"
     if meta_path.exists():
         metadata = json.loads(meta_path.read_text())
         deck_name = name or metadata.get("book_title", "Imported Deck")
@@ -290,7 +454,7 @@ def export(json_dir: str, output: Optional[str], name: Optional[str]):
         deck_name = name or "Imported Deck"
 
     # Collect all included cards
-    included_dir = json_dir / "included"
+    included_dir = json_dir_path / "included"
     if not included_dir.exists():
         console.print("[red]No included cards found![/red]")
         return
@@ -310,28 +474,98 @@ def export(json_dir: str, output: Optional[str], name: Optional[str]):
     if output:
         output_path = Path(output)
     else:
-        output_path = json_dir / f"{deck_name}.apkg"
+        output_path = json_dir_path / f"{deck_name}.apkg"
 
     exporter.export(output_path)
     console.print(f"[green]✓[/green] Exported {card_count} cards to: {output_path}")
 
 
+@cli.command()
+@click.argument("output_dir", type=click.Path(exists=True))
+def clear_checkpoint(output_dir: str):
+    """Clear checkpoint to start fresh."""
+    checkpoint_manager = CheckpointManager(Path(output_dir))
+    if checkpoint_manager.delete():
+        console.print("[green]✓[/green] Checkpoint deleted")
+    else:
+        console.print("[yellow]No checkpoint found[/yellow]")
+
+
+class ChapterSelectionError(ValueError):
+    """Error parsing chapter selection string."""
+    pass
+
+
 def parse_chapter_selection(selection: str, total_chapters: int) -> list[int]:
-    """Parse chapter selection string like '1,2,3' or '1-5' into indices."""
+    """
+    Parse chapter selection string like '1,2,3' or '1-5' into indices.
+
+    Args:
+        selection: Comma-separated chapter numbers or ranges (e.g., "1,3,5" or "1-5")
+        total_chapters: Total number of chapters in the book
+
+    Returns:
+        List of 0-indexed chapter indices
+
+    Raises:
+        ChapterSelectionError: If the selection string is invalid
+    """
+    if not selection or not selection.strip():
+        raise ChapterSelectionError("Empty chapter selection")
+
     indices = set()
 
     for part in selection.split(","):
         part = part.strip()
-        if "-" in part:
-            start, end = part.split("-", 1)
-            start_idx = int(start) - 1  # Convert to 0-indexed
-            end_idx = int(end)  # Inclusive end
-            indices.update(range(start_idx, end_idx))
-        else:
-            indices.add(int(part) - 1)  # Convert to 0-indexed
+        if not part:
+            continue
+
+        try:
+            if "-" in part:
+                range_parts = part.split("-", 1)
+                start_str, end_str = range_parts[0].strip(), range_parts[1].strip()
+
+                if not start_str or not end_str:
+                    raise ChapterSelectionError(
+                        f"Invalid range format: '{part}'. Use format like '1-5'"
+                    )
+
+                start_idx = int(start_str) - 1  # Convert to 0-indexed
+                end_idx = int(end_str)  # Inclusive end
+
+                if start_idx < 0 or end_idx <= 0:
+                    raise ChapterSelectionError(
+                        f"Chapter numbers must be positive: '{part}'"
+                    )
+                if start_idx >= end_idx:
+                    raise ChapterSelectionError(
+                        f"Invalid range: start must be less than end in '{part}'"
+                    )
+
+                indices.update(range(start_idx, end_idx))
+            else:
+                chapter_num = int(part)
+                if chapter_num <= 0:
+                    raise ChapterSelectionError(
+                        f"Chapter numbers must be positive: '{part}'"
+                    )
+                indices.add(chapter_num - 1)  # Convert to 0-indexed
+        except ValueError as e:
+            if "invalid literal" in str(e):
+                raise ChapterSelectionError(
+                    f"Invalid chapter number: '{part}'. Use numbers like '1,2,3' or '1-5'"
+                )
+            raise
 
     # Filter valid indices
-    return sorted(i for i in indices if 0 <= i < total_chapters)
+    valid_indices = sorted(i for i in indices if 0 <= i < total_chapters)
+
+    if not valid_indices:
+        raise ChapterSelectionError(
+            f"No valid chapters selected. Book has {total_chapters} chapters (1-{total_chapters})"
+        )
+
+    return valid_indices
 
 
 def main():
