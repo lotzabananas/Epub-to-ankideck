@@ -1,0 +1,191 @@
+"""Parse EPUB files into structured chapter data."""
+
+import re
+from pathlib import Path
+
+import ebooklib
+from bs4 import BeautifulSoup
+from ebooklib import epub
+
+from ..models import Book, Chapter
+
+
+def clean_html_to_text(html_content: str) -> str:
+    """Convert HTML to clean plain text."""
+    soup = BeautifulSoup(html_content, "html.parser")
+
+    # Remove script and style elements
+    for element in soup(["script", "style", "nav", "header", "footer"]):
+        element.decompose()
+
+    # Get text with some structure preservation
+    text = soup.get_text(separator="\n")
+
+    # Clean up whitespace
+    lines = (line.strip() for line in text.splitlines())
+    text = "\n".join(line for line in lines if line)
+
+    # Normalize multiple newlines
+    text = re.sub(r"\n{3,}", "\n\n", text)
+
+    return text.strip()
+
+
+def extract_chapter_title(item: epub.EpubHtml, soup: BeautifulSoup, index: int) -> str:
+    """Extract the chapter title from an EPUB item."""
+    # Try to get title from the item's title attribute
+    if item.title:
+        return item.title
+
+    # Try to find h1, h2, or h3 heading
+    for tag in ["h1", "h2", "h3"]:
+        heading = soup.find(tag)
+        if heading:
+            title = heading.get_text(strip=True)
+            if title and len(title) < 200:  # Sanity check
+                return title
+
+    # Fallback to item filename or generic title
+    if item.file_name:
+        name = Path(item.file_name).stem
+        # Clean up common naming patterns
+        name = re.sub(r"^(chapter|ch|chap)[_-]?", "", name, flags=re.IGNORECASE)
+        if name and not name.isdigit():
+            return name.replace("_", " ").replace("-", " ").title()
+
+    return f"Chapter {index + 1}"
+
+
+def count_words(text: str) -> int:
+    """Count words in text."""
+    return len(text.split())
+
+
+def is_content_chapter(text: str, title: str) -> bool:
+    """Determine if this is actual content vs front/back matter."""
+    # Skip very short sections
+    if count_words(text) < 100:
+        return False
+
+    # Skip common non-content sections
+    skip_patterns = [
+        r"^table of contents?$",
+        r"^contents?$",
+        r"^copyright",
+        r"^all rights reserved",
+        r"^title page$",
+        r"^cover$",
+        r"^dedication$",
+        r"^acknowledgements?$",
+        r"^about the author$",
+        r"^index$",
+        r"^bibliography$",
+        r"^references$",
+        r"^notes$",
+        r"^appendix",
+    ]
+
+    title_lower = title.lower().strip()
+    for pattern in skip_patterns:
+        if re.match(pattern, title_lower):
+            return False
+
+    return True
+
+
+def parse_epub(file_path: str | Path) -> Book:
+    """
+    Parse an EPUB file into a Book object with chapters.
+
+    Args:
+        file_path: Path to the EPUB file
+
+    Returns:
+        Book object with parsed chapters
+    """
+    file_path = Path(file_path)
+    if not file_path.exists():
+        raise FileNotFoundError(f"EPUB file not found: {file_path}")
+
+    book = epub.read_epub(str(file_path))
+
+    # Extract metadata
+    title = "Unknown Title"
+    author = "Unknown Author"
+    language = None
+    identifier = None
+
+    # Get title
+    title_meta = book.get_metadata("DC", "title")
+    if title_meta:
+        title = title_meta[0][0]
+
+    # Get author
+    author_meta = book.get_metadata("DC", "creator")
+    if author_meta:
+        author = author_meta[0][0]
+
+    # Get language
+    lang_meta = book.get_metadata("DC", "language")
+    if lang_meta:
+        language = lang_meta[0][0]
+
+    # Get identifier (ISBN etc)
+    id_meta = book.get_metadata("DC", "identifier")
+    if id_meta:
+        identifier = id_meta[0][0]
+
+    # Extract chapters
+    chapters: list[Chapter] = []
+    chapter_index = 0
+
+    # Get items in spine order (reading order)
+    for item in book.get_items():
+        if item.get_type() == ebooklib.ITEM_DOCUMENT:
+            html_content = item.get_content().decode("utf-8", errors="ignore")
+            soup = BeautifulSoup(html_content, "html.parser")
+            text = clean_html_to_text(html_content)
+
+            if not text:
+                continue
+
+            chapter_title = extract_chapter_title(item, soup, chapter_index)
+
+            # Filter out non-content sections
+            if not is_content_chapter(text, chapter_title):
+                continue
+
+            chapter = Chapter(
+                index=chapter_index,
+                title=chapter_title,
+                content=text,
+                word_count=count_words(text),
+                html_content=html_content,
+            )
+            chapters.append(chapter)
+            chapter_index += 1
+
+    return Book(
+        title=title,
+        author=author,
+        chapters=chapters,
+        language=language,
+        identifier=identifier,
+    )
+
+
+def get_book_summary(book: Book) -> str:
+    """Get a human-readable summary of a parsed book."""
+    lines = [
+        f"Title: {book.title}",
+        f"Author: {book.author}",
+        f"Chapters: {len(book.chapters)}",
+        f"Total words: {book.total_words:,}",
+        "",
+        "Chapters:",
+    ]
+
+    for ch in book.chapters:
+        lines.append(f"  {ch.index + 1}. {ch.title} ({ch.word_count:,} words)")
+
+    return "\n".join(lines)
