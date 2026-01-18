@@ -210,14 +210,13 @@ class Density(str, Enum):
 class EpubImage(BaseModel):
     """An image extracted from an EPUB file."""
 
+    model_config = {"arbitrary_types_allowed": True}
+
     id: str = Field(description="Unique identifier for the image")
     filename: str = Field(description="Original filename in EPUB")
     media_type: str = Field(description="MIME type (e.g., image/jpeg)")
     data: bytes = Field(description="Raw image data")
     source_chapter_index: Optional[int] = Field(default=None, description="Chapter this image appears in")
-
-    class Config:
-        arbitrary_types_allowed = True
 
 
 class Chapter(BaseModel):
