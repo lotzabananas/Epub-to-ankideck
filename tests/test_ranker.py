@@ -1,6 +1,5 @@
 """Tests for card ranking and filtering."""
 
-import pytest
 
 from epub_to_anki.models import (
     Card,

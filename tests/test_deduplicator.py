@@ -1,6 +1,5 @@
 """Tests for duplicate detection."""
 
-import pytest
 
 from epub_to_anki.deduplicator import (
     CardDeduplicator,
@@ -91,9 +90,17 @@ def test_find_similar_duplicates():
 def test_no_duplicates():
     """Test when there are no duplicates."""
     cards = [
-        create_test_card("1", "What is photosynthesis?", "Plants converting light to energy"),
-        create_test_card("2", "Define the theory of relativity", "Einstein's theory about space and time"),
-        create_test_card("3", "Explain the water cycle", "Evaporation precipitation and collection"),
+        create_test_card(
+            "1", "What is photosynthesis?", "Plants converting light to energy"
+        ),
+        create_test_card(
+            "2", "Define the theory of relativity",
+            "Einstein's theory about space and time"
+        ),
+        create_test_card(
+            "3", "Explain the water cycle",
+            "Evaporation precipitation and collection"
+        ),
     ]
 
     deduplicator = CardDeduplicator()

@@ -1,7 +1,6 @@
 """Command-line interface for EPUB to Anki conversion."""
 
 import json
-import sys
 from pathlib import Path
 from typing import Optional
 
@@ -16,7 +15,7 @@ from .checkpoint import CheckpointManager
 from .cost_estimator import CostEstimator
 from .deduplicator import CardDeduplicator
 from .exporter import AnkiExporter
-from .exporter.anki_exporter import export_cards_to_json, MultiBookExporter
+from .exporter.anki_exporter import MultiBookExporter, export_cards_to_json
 from .generator import CardGenerator
 from .models import CardStatus, ChapterCards, DeckConfig, Density
 from .parser import parse_epub
@@ -58,7 +57,9 @@ def display_chapter_cards_summary(chapter_cards: ChapterCards) -> None:
     console.print(bucket_table)
 
 
-def display_cost_estimate(book, density: Density, chapter_indices: Optional[list[int]] = None) -> None:
+def display_cost_estimate(
+    book, density: Density, chapter_indices: Optional[list[int]] = None
+) -> None:
     """Display cost estimate before generation."""
     estimator = CostEstimator()
     estimate = estimator.estimate_book(book, density, chapter_indices)
@@ -72,14 +73,17 @@ def display_cost_estimate(book, density: Density, chapter_indices: Optional[list
     table.add_row("Density", estimate.density)
     table.add_row("Input tokens (est.)", f"~{estimate.total_input_tokens:,}")
     table.add_row("Output tokens (est.)", f"~{estimate.total_output_tokens:,}")
-    table.add_row("[bold]Estimated cost[/bold]", f"[bold]${estimate.estimated_cost_usd:.4f} USD[/bold]")
+    table.add_row(
+        "[bold]Estimated cost[/bold]", f"[bold]${estimate.estimated_cost_usd:.4f} USD[/bold]"
+    )
 
     console.print(table)
 
 
 def display_cards_preview(cards: list, limit: int = 5) -> None:
     """Display a preview of cards."""
-    console.print(f"\n[bold]Sample Cards (showing {min(limit, len(cards))} of {len(cards)}):[/bold]\n")
+    num_shown = min(limit, len(cards))
+    console.print(f"\n[bold]Sample Cards (showing {num_shown} of {len(cards)}):[/bold]\n")
 
     for i, card in enumerate(cards[:limit]):
         score = card.compute_score()
@@ -289,9 +293,11 @@ def generate(
     if resume and checkpoint_manager.exists():
         checkpoint = checkpoint_manager.load()
         if checkpoint and checkpoint.book_title == book.title:
-            console.print(f"\n[bold green]Resuming from checkpoint[/bold green]")
+            console.print("\n[bold green]Resuming from checkpoint[/bold green]")
             summary = checkpoint_manager.get_resume_summary(checkpoint)
-            console.print(f"  Chapters processed: {summary['chapters_processed']}/{summary['chapters_total']}")
+            processed = summary['chapters_processed']
+            total = summary['chapters_total']
+            console.print(f"  Chapters processed: {processed}/{total}")
             console.print(f"  Cards generated: {summary['total_cards_generated']}")
 
             # Restore chapter cards
@@ -304,7 +310,9 @@ def generate(
             density_enum = checkpoint.density
             console.print(f"  Density: {density_enum.value}")
         else:
-            console.print("[yellow]Checkpoint found but for different book, starting fresh[/yellow]")
+            console.print(
+                "[yellow]Checkpoint found but for different book, starting fresh[/yellow]"
+            )
 
     # Parse chapter selection
     chapter_indices = None
@@ -379,8 +387,9 @@ def generate(
                 # Generate cards
                 if dry_run:
                     # Create mock cards for dry run
-                    from .models import Card, CardFormat, CardType
                     import uuid
+
+                    from .models import Card, CardFormat, CardType
 
                     num_cards = max(1, chapter.word_count // 500)
                     mock_cards = []
@@ -405,7 +414,9 @@ def generate(
                         density_used=chapter_density_enum,
                     )
                 else:
-                    chapter_cards = generator.generate_for_chapter(book, chapter, chapter_density_enum)
+                    chapter_cards = generator.generate_for_chapter(
+                        book, chapter, chapter_density_enum
+                    )
 
                 # Rank cards
                 ranker.rank_chapter(chapter_cards)
@@ -489,7 +500,9 @@ def generate(
     exporter = AnkiExporter(deck_name, config=deck_config)
 
     for chapter_cards in all_chapter_cards:
-        exporter.add_chapter_cards(chapter_cards, include_excluded=False, generate_reverse=reverse)
+        exporter.add_chapter_cards(
+            chapter_cards, include_excluded=False, generate_reverse=reverse
+        )
 
     # Add images if extracted
     if images and book.images:
@@ -500,14 +513,16 @@ def generate(
     exporter.export(apkg_path)
 
     console.print(f"\n[green]O[/green] Anki deck exported: {apkg_path}")
-    console.print(f"[green]O[/green] JSON backup saved to: {output_dir}/included/ and {output_dir}/excluded/")
+    console.print(
+        f"[green]O[/green] JSON backup saved to: {output_dir}/included/ and {output_dir}/excluded/"
+    )
     console.print(f"[green]O[/green] Final count: {included_cards} cards included")
 
     if reverse:
-        console.print(f"[green]O[/green] Reverse cards: enabled")
+        console.print("[green]O[/green] Reverse cards: enabled")
 
     if subdecks:
-        console.print(f"[green]O[/green] Chapter subdecks: created")
+        console.print("[green]O[/green] Chapter subdecks: created")
 
     if parent_deck:
         console.print(f"[green]O[/green] Parent deck: {parent_deck}")
@@ -551,7 +566,9 @@ def combine(
     # This is a placeholder - in real usage, users would need to generate cards first
     # or we would need to load from existing JSON exports
     console.print("[yellow]Note: This command combines existing generated decks.[/yellow]")
-    console.print("[yellow]Use the 'generate' command first to create cards for each book.[/yellow]")
+    console.print(
+        "[yellow]Use the 'generate' command first to create cards for each book.[/yellow]"
+    )
 
     # Look for existing output directories
     for epub_path in epub_paths:

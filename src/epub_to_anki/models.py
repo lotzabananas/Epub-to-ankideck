@@ -145,13 +145,27 @@ class CardTemplate(BaseModel):
 class DeckConfig(BaseModel):
     """Configuration for deck generation and export."""
 
-    deck_name: Optional[str] = Field(default=None, description="Custom deck name (defaults to book title)")
-    parent_deck: Optional[str] = Field(default=None, description="Parent deck name for nesting")
-    create_subdecks: bool = Field(default=False, description="Create per-chapter subdecks")
-    include_reverse: bool = Field(default=False, description="Generate reverse (Answer→Question) cards")
-    extract_images: bool = Field(default=False, description="Extract and embed images from EPUB")
-    qa_template: Optional[CardTemplate] = Field(default=None, description="Custom Q&A template")
-    cloze_template: Optional[CardTemplate] = Field(default=None, description="Custom Cloze template")
+    deck_name: Optional[str] = Field(
+        default=None, description="Custom deck name (defaults to book title)"
+    )
+    parent_deck: Optional[str] = Field(
+        default=None, description="Parent deck name for nesting"
+    )
+    create_subdecks: bool = Field(
+        default=False, description="Create per-chapter subdecks"
+    )
+    include_reverse: bool = Field(
+        default=False, description="Generate reverse (Answer→Question) cards"
+    )
+    extract_images: bool = Field(
+        default=False, description="Extract and embed images from EPUB"
+    )
+    qa_template: Optional[CardTemplate] = Field(
+        default=None, description="Custom Q&A template"
+    )
+    cloze_template: Optional[CardTemplate] = Field(
+        default=None, description="Custom Cloze template"
+    )
 
     def get_full_deck_name(self, book_title: str, book_author: str) -> str:
         """Get the full deck name including parent if specified."""
@@ -160,7 +174,9 @@ class DeckConfig(BaseModel):
             return f"{self.parent_deck}::{base_name}"
         return base_name
 
-    def get_chapter_deck_name(self, base_deck_name: str, chapter_title: str, chapter_index: int) -> str:
+    def get_chapter_deck_name(
+        self, base_deck_name: str, chapter_title: str, chapter_index: int
+    ) -> str:
         """Get the subdeck name for a chapter."""
         if self.create_subdecks:
             safe_title = "".join(c if c.isalnum() or c in " -_" else "_" for c in chapter_title)
@@ -216,7 +232,9 @@ class EpubImage(BaseModel):
     filename: str = Field(description="Original filename in EPUB")
     media_type: str = Field(description="MIME type (e.g., image/jpeg)")
     data: bytes = Field(description="Raw image data")
-    source_chapter_index: Optional[int] = Field(default=None, description="Chapter this image appears in")
+    source_chapter_index: Optional[int] = Field(
+        default=None, description="Chapter this image appears in"
+    )
 
 
 class Chapter(BaseModel):
@@ -242,7 +260,9 @@ class Card(BaseModel):
     answer: Optional[str] = Field(default=None, description="Answer (for QA format)")
 
     # Content - for Cloze cards
-    cloze_text: Optional[str] = Field(default=None, description="Cloze text with {{c1::...}} markup")
+    cloze_text: Optional[str] = Field(
+        default=None, description="Cloze text with {{c1::...}} markup"
+    )
 
     # Ranking
     importance: int = Field(ge=1, le=10, description="How essential is this knowledge (1-10)")
@@ -251,21 +271,35 @@ class Card(BaseModel):
     # Metadata (hidden on card, stored for reference)
     source_chapter: str = Field(description="Chapter title")
     source_chapter_index: int = Field(description="Chapter number")
-    source_section: Optional[str] = Field(default=None, description="Section heading if available")
-    source_quote: Optional[str] = Field(default=None, description="Original text this card is based on")
+    source_section: Optional[str] = Field(
+        default=None, description="Section heading if available"
+    )
+    source_quote: Optional[str] = Field(
+        default=None, description="Original text this card is based on"
+    )
 
     # Status
     status: CardStatus = Field(default=CardStatus.INCLUDED)
     tags: list[str] = Field(default_factory=list)
 
     # Versioning
-    created_at: datetime = Field(default_factory=datetime.now, description="When the card was created")
-    updated_at: datetime = Field(default_factory=datetime.now, description="Last modification time")
-    version_history: list[CardVersion] = Field(default_factory=list, description="Edit history")
+    created_at: datetime = Field(
+        default_factory=datetime.now, description="When the card was created"
+    )
+    updated_at: datetime = Field(
+        default_factory=datetime.now, description="Last modification time"
+    )
+    version_history: list[CardVersion] = Field(
+        default_factory=list, description="Edit history"
+    )
 
     # Reverse card tracking
-    is_reverse: bool = Field(default=False, description="True if this is a reverse (A→Q) card")
-    original_card_id: Optional[str] = Field(default=None, description="ID of original card if this is a reverse")
+    is_reverse: bool = Field(
+        default=False, description="True if this is a reverse (A→Q) card"
+    )
+    original_card_id: Optional[str] = Field(
+        default=None, description="ID of original card if this is a reverse"
+    )
 
     def get_display_text(self) -> str:
         """Get human-readable card content."""
@@ -344,7 +378,6 @@ class Card(BaseModel):
         if self.format != CardFormat.QA or not self.question or not self.answer:
             return None
 
-        import uuid
         reverse_id = f"{self.id}_rev"
 
         return Card(
@@ -372,7 +405,9 @@ class ChapterCards(BaseModel):
     chapter: Chapter
     cards: list[Card] = Field(default_factory=list)
     density_used: Density = Field(description="Density setting used for generation")
-    threshold: Optional[float] = Field(default=None, description="Score threshold used for filtering")
+    threshold: Optional[float] = Field(
+        default=None, description="Score threshold used for filtering"
+    )
 
     @property
     def included_cards(self) -> list[Card]:

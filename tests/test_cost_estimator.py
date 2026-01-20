@@ -1,8 +1,7 @@
 """Tests for cost estimation."""
 
-import pytest
 
-from epub_to_anki.cost_estimator import CostEstimator, CostEstimate
+from epub_to_anki.cost_estimator import CostEstimate, CostEstimator
 from epub_to_anki.models import Book, Chapter, Density
 
 

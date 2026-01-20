@@ -12,7 +12,7 @@ from .checkpoint import CheckpointManager, SessionCheckpoint
 from .cost_estimator import CostEstimator
 from .deduplicator import CardDeduplicator
 from .exporter import AnkiExporter
-from .exporter.anki_exporter import export_cards_to_json, MultiBookExporter
+from .exporter.anki_exporter import export_cards_to_json
 from .generator import CardGenerator
 from .models import (
     Book,
@@ -20,7 +20,6 @@ from .models import (
     CardFormat,
     CardStatus,
     CardTemplate,
-    CardVersion,
     ChapterCards,
     DeckConfig,
     Density,
@@ -401,8 +400,9 @@ class EpubToAnkiAgent:
 
     def _generate_mock_cards(self, chapter) -> ChapterCards:
         """Generate mock cards for dry run mode."""
-        from .models import CardType
         import uuid
+
+        from .models import CardType
 
         # Get chapter-specific density
         chapter_density = self.chapter_densities.get(chapter.index, self.density)
@@ -1073,7 +1073,10 @@ class EpubToAnkiAgent:
 AGENT_TOOLS = [
     {
         "name": "load_book",
-        "description": "Load an EPUB file and get book information including chapters. Checks for existing checkpoint to resume.",
+        "description": (
+            "Load an EPUB file and get book information including chapters. "
+            "Checks for existing checkpoint to resume."
+        ),
         "parameters": {
             "type": "object",
             "properties": {
@@ -1095,7 +1098,10 @@ AGENT_TOOLS = [
     },
     {
         "name": "resume_session",
-        "description": "Resume a previous session from checkpoint. Call after load_book if can_resume is true.",
+        "description": (
+            "Resume a previous session from checkpoint. "
+            "Call after load_book if can_resume is true."
+        ),
         "parameters": {"type": "object", "properties": {}},
     },
     {
@@ -1144,7 +1150,9 @@ AGENT_TOOLS = [
     },
     {
         "name": "configure_deck",
-        "description": "Configure deck export options (parent deck, subdecks, reverse cards, images)",
+        "description": (
+            "Configure deck export options (parent deck, subdecks, reverse cards, images)"
+        ),
         "parameters": {
             "type": "object",
             "properties": {
@@ -1401,7 +1409,8 @@ AGENT_TOOLS = [
 
 def get_agent_system_prompt() -> str:
     """Get the system prompt for the Claude Code agent."""
-    return """You are an AI assistant specialized in creating high-quality Anki flashcard decks from EPUB books.
+    return """\
+You are an AI assistant specialized in creating high-quality Anki flashcard decks from EPUB books.
 
 Your capabilities:
 1. Load and analyze EPUB books (with optional image extraction)

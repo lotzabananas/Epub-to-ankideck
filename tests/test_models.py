@@ -1,6 +1,5 @@
 """Tests for data models."""
 
-import pytest
 
 from epub_to_anki.models import (
     Card,

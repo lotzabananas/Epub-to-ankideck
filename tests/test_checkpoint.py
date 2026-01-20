@@ -1,14 +1,11 @@
 """Tests for checkpoint/resume functionality."""
 
-import json
 import tempfile
 from pathlib import Path
 
-import pytest
-
 from epub_to_anki.checkpoint import (
-    CheckpointManager,
     ChapterCheckpoint,
+    CheckpointManager,
     SessionCheckpoint,
 )
 from epub_to_anki.models import (

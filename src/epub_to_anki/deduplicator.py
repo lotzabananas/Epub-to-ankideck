@@ -1,9 +1,7 @@
 """Duplicate detection and handling for flashcards."""
 
 import re
-from collections import defaultdict
 from dataclasses import dataclass, field
-from typing import Optional
 
 from .models import Card, CardFormat, CardStatus, ChapterCards
 
@@ -292,7 +290,8 @@ class CardDeduplicator:
 
         if result.duplicate_groups and max_examples > 0:
             lines.append("")
-            lines.append(f"Example duplicates (showing {min(max_examples, len(result.duplicate_groups))}):")
+            num_shown = min(max_examples, len(result.duplicate_groups))
+            lines.append(f"Example duplicates (showing {num_shown}):")
 
             for i, group in enumerate(result.duplicate_groups[:max_examples]):
                 lines.append(f"\n  Group {i + 1} ({group.count} cards):")

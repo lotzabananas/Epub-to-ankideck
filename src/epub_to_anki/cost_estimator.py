@@ -187,11 +187,11 @@ class CostEstimator:
             f"{'─' * 40}",
             f"Chapters to process: {estimate.chapters_count}",
             f"Total words: {estimate.total_words:,}",
-            f"",
-            f"Token estimates:",
+            "",
+            "Token estimates:",
             f"  Input:  ~{estimate.total_input_tokens:,} tokens",
             f"  Output: ~{estimate.total_output_tokens:,} tokens",
-            f"",
+            "",
             f"Estimated cost: ${estimate.estimated_cost_usd:.4f} USD",
         ]
 

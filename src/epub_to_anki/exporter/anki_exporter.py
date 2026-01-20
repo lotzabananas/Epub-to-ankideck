@@ -2,7 +2,6 @@
 
 import hashlib
 import json
-import re
 from pathlib import Path
 from typing import Optional
 
@@ -16,7 +15,6 @@ from ..models import (
     CardTemplate,
     ChapterCards,
     DeckConfig,
-    DeckMetadata,
     EpubImage,
 )
 
@@ -366,7 +364,8 @@ class AnkiExporter:
                 count += 1
 
                 # Generate reverse card if configured and card is Q&A
-                if (generate_reverse or self.config.include_reverse) and card.format == CardFormat.QA:
+                should_reverse = generate_reverse or self.config.include_reverse
+                if should_reverse and card.format == CardFormat.QA:
                     reverse = card.create_reverse()
                     if reverse:
                         self.add_card(reverse, target_deck)

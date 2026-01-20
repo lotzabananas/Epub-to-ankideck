@@ -3,7 +3,6 @@
 import re
 import uuid
 from pathlib import Path
-from typing import Optional
 
 import ebooklib
 from bs4 import BeautifulSoup
