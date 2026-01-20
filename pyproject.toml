@@ -1,28 +1,21 @@
 [project]
-name = "epub-to-ankideck"
-version = "0.2.0"
-description = "Generate high-quality Anki flashcard decks from EPUB books using Claude"
+name = "epub-to-anki"
+version = "0.3.0"
+description = "Create Anki flashcards from EPUB books using Claude Code"
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
-    "anthropic>=0.39.0",
     "ebooklib>=0.18",
     "genanki>=0.13.0",
     "beautifulsoup4>=4.12.0",
     "pydantic>=2.0.0",
-    "rich>=13.0.0",
-    "click>=8.0.0",
 ]
 
 [project.optional-dependencies]
 dev = [
     "pytest>=8.0.0",
-    "pytest-asyncio>=0.23.0",
     "ruff>=0.1.0",
 ]
-
-[project.scripts]
-epub2anki = "epub_to_anki.cli:main"
 
 [build-system]
 requires = ["hatchling"]
@@ -39,7 +32,8 @@ target-version = "py310"
 select = ["E", "F", "I", "N", "W"]
 
 [tool.ruff.lint.per-file-ignores]
-# Allow long lines in files with CSS/template strings
 "src/epub_to_anki/models.py" = ["E501"]
-"src/epub_to_anki/generator/prompts.py" = ["E501"]
 "src/epub_to_anki/exporter/anki_exporter.py" = ["E501"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

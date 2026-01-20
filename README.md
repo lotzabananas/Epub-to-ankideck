@@ -1,141 +1,80 @@
-# EPUB to Anki Deck Generator
+# EPUB to Anki
 
-Generate high-quality Anki flashcard decks from EPUB books using Claude AI.
+Create high-quality Anki flashcards from EPUB books using Claude Code.
+
+**No API costs** - Uses your Claude Pro plan through Claude Code.
+
+## Quick Start
+
+1. **Open Claude Code in this folder**
+
+2. **Tell Claude Code to process your book:**
+   ```
+   Make flashcards from ~/Downloads/mybook.epub
+   ```
+
+3. **Import the generated `.apkg` file into Anki**
+
+That's it! Claude Code handles everything.
+
+## How It Works
+
+1. **EPUB Parser** - Extracts text from your ebook
+2. **Claude Code** - Reads chapters and generates flashcards (using your Pro plan)
+3. **Anki Exporter** - Creates `.apkg` files you can import into Anki
 
 ## Features
 
-- **Smart Card Generation**: Uses Claude to identify card-worthy content and create appropriate Q&A or Cloze cards
-- **Two-Pass Ranking**: Generates all potential cards, then ranks by importance/difficulty for filtering
-- **Chapter-by-Chapter Processing**: Review one chapter at a time, adjust thresholds per chapter
-- **Flexible Density Settings**: Light (core concepts), Medium (balanced), Thorough (comprehensive)
-- **Hidden Metadata**: Source chapter/section stored but not shown on card face
-- **Preserves Excluded Cards**: Nothing thrown away - adjust thresholds later without re-processing
+- **Q&A and Cloze cards** - Claude chooses the best format for each fact
+- **Smart ranking** - Cards scored by importance and difficulty
+- **Deduplication** - Removes similar/duplicate cards
+- **Checkpoint/Resume** - For long books, resume where you left off
 
 ## Installation
 
 ```bash
-# Clone the repository
-git clone https://github.com/yourusername/epub-to-ankideck.git
-cd epub-to-ankideck
-
-# Install dependencies
+# Clone and set up
+git clone https://github.com/lotzabananas/Epub-to-ankideck.git
+cd Epub-to-ankideck
+python3 -m venv venv
+source venv/bin/activate
 pip install -e .
 ```
 
-## Usage
+## Usage Examples
 
-### Command Line
-
-```bash
-# Show book information
-epub2anki info mybook.epub
-
-# Generate deck (interactive mode)
-epub2anki generate mybook.epub
-
-# Generate with specific settings
-epub2anki generate mybook.epub --density thorough --chapters 1-3
-
-# Auto mode (no manual review)
-epub2anki generate mybook.epub --auto --threshold 6
+**Basic:**
+```
+Make flashcards from /path/to/book.epub
 ```
 
-### As a Library
-
-```python
-from epub_to_anki.parser import parse_epub
-from epub_to_anki.generator import CardGenerator
-from epub_to_anki.ranker import CardRanker
-from epub_to_anki.exporter import AnkiExporter
-from epub_to_anki.models import Density
-
-# Parse book
-book = parse_epub("mybook.epub")
-
-# Generate cards
-generator = CardGenerator()
-chapter_cards = generator.generate_for_chapter(book, book.chapters[0], Density.MEDIUM)
-
-# Rank and filter
-ranker = CardRanker()
-ranker.rank_chapter(chapter_cards)
-ranker.apply_custom_threshold(chapter_cards, threshold=6.0)
-
-# Export
-exporter = AnkiExporter(f"{book.title} - {book.author}")
-exporter.add_chapter_cards(chapter_cards)
-exporter.export("output/mybook.apkg")
+**With options:**
+```
+Process book.epub with thorough density (more cards)
 ```
 
-### With Claude Code Agent
-
-The package includes an agent interface for use with Claude Code SDK:
-
-```python
-from epub_to_anki.agent import EpubToAnkiAgent
-
-agent = EpubToAnkiAgent()
-agent.load_book("mybook.epub")
-agent.set_density("medium")
-agent.generate_chapter(0)
-agent.apply_threshold(0, 6.0)
-agent.export_deck()
+**Auto mode (no questions):**
+```
+Auto-generate flashcards from book.epub
 ```
 
-## Card Generation
+## Output
 
-### Density Levels
+Cards are exported to `output/<book-name>/`:
+- `<book-name>.apkg` - Import this into Anki
+- `cards.json` - JSON backup of all cards
 
-| Density | Cards per Page | Best For |
-|---------|---------------|----------|
-| Light | ~0.3-0.5 | Quick overview, core concepts only |
-| Medium | ~1 | Balanced learning, most users |
-| Thorough | ~2-3 | Deep study, comprehensive retention |
-
-### Card Scoring
-
-Cards are scored 1-10 on two dimensions:
-- **Importance**: How essential is this knowledge? (weighted 2x)
-- **Difficulty**: How hard is this to remember?
-
-Score = (Importance × 2 + Difficulty) / 3
-
-### Card Formats
-
-**Q&A Cards** - For concepts, explanations, relationships:
-```
-Q: What is neuroplasticity?
-A: The brain's ability to reorganize itself by forming new neural connections
-```
-
-**Cloze Cards** - For terminology, facts, sequences:
-```
-The {{c1::mitochondria}} is the powerhouse of the cell.
-```
-
-## Output Structure
+## Project Structure
 
 ```
-output/
-├── Book_Title/
-│   ├── included/
-│   │   ├── chapter_01.json
-│   │   └── chapter_02.json
-│   ├── excluded/
-│   │   ├── chapter_01.json
-│   │   └── chapter_02.json
-│   ├── metadata.json
-│   └── Book_Title.apkg
+src/epub_to_anki/
+├── parser/          # EPUB text extraction
+├── exporter/        # Anki .apkg generation
+├── ranker/          # Card scoring and filtering
+├── deduplicator.py  # Duplicate detection
+├── checkpoint.py    # Resume support
+└── models.py        # Data structures
 ```
-
-## Style Guide
-
-See [docs/STYLE_GUIDE.md](docs/STYLE_GUIDE.md) for detailed card quality guidelines.
-
-## Requirements
-
-- Python 3.10+
-- Anthropic API key (set `ANTHROPIC_API_KEY` environment variable)
 
 ## License
 
